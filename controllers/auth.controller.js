@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User.model');
+const { requireJwtSecret } = require('../config/auth.config');
 
 const authController = {
   register: async (req, res) => {
@@ -82,7 +83,7 @@ const authController = {
 
       const token = jwt.sign(
         { id: user.id, email: user.email },
-        process.env.JWT_SECRET,
+        requireJwtSecret(),
         { expiresIn: '7d' }
       );
 
