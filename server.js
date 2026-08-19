@@ -63,16 +63,31 @@ app.set('io', io);
 let databaseReadyPromise;
 
 const syncSchema = async () => {
-  await sequelize.sync({ force: false });
-  const queryInterface = sequelize.getQueryInterface();
-  const boardColumns = await queryInterface.describeTable('Boards');
+  const shouldSync = !isVercel && process.env.DB_SYNC !== 'false';
 
-  if (!boardColumns.cover_image_url) {
-    await queryInterface.addColumn('Boards', 'cover_image_url', {
-      type: sequelize.Sequelize.TEXT('medium'),
-      allowNull: true,
-    });
-    console.log('Colonne cover_image_url ajoutee aux boards');
+  if (shouldSync) {
+    await sequelize.sync({ force: false });
+  }
+
+  const queryInterface = sequelize.getQueryInterface();
+
+  try {
+    const boardColumns = await queryInterface.describeTable('Boards');
+
+    if (!boardColumns.cover_image_url) {
+      await queryInterface.addColumn('Boards', 'cover_image_url', {
+        type: sequelize.Sequelize.TEXT('medium'),
+        allowNull: true,
+      });
+      console.log('Colonne cover_image_url ajoutee aux boards');
+    }
+  } catch (error) {
+    if (error.original?.code === 'ER_NO_SUCH_TABLE' || error.original?.errno === 1146) {
+      console.warn('Table Boards absente: lance database/init.sql sur la base distante avant d utiliser les boards.');
+      return;
+    }
+
+    throw error;
   }
 };
 
