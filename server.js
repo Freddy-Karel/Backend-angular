@@ -6,42 +6,131 @@ const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const sequelize = require('./config/db.config');
 
-// Import des modèles et relations
 require('./models/index');
-
-const User = require('./models/User.model');
-const Board = require('./models/Board.model');
-const BoardMember = require('./models/BoardMember.model');
-const List = require('./models/List.model');
-const Card = require('./models/Card.model');
-const Subtask = require('./models/Subtask.model');
-const Comment = require('./models/Comment.model');
-const Label = require('./models/Label.model');
-const CardLabel = require('./models/CardLabel.model');
 
 const app = express();
 const server = http.createServer(app);
+const isVercel = Boolean(process.env.VERCEL);
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:4200')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const isAllowedOrigin = (origin) => {
+  if (!origin || allowedOrigins.includes(origin)) {
+    return true;
+  }
+
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === 'localhost' || hostname.endsWith('.vercel.app');
+  } catch (error) {
+    return false;
+  }
+};
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (isAllowedOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Origin not allowed by CORS'));
+  },
+  credentials: true,
+};
+
 const io = new Server(server, {
   cors: {
-    origin: 'http://localhost:4200',
+    origin(origin, callback) {
+      callback(null, isAllowedOrigin(origin));
+    },
     methods: ['GET', 'POST'],
+    credentials: true,
   },
 });
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+app.use(cors(corsOptions));
+app.use(express.json({ limit: process.env.JSON_LIMIT || '8mb' }));
 
-// Middleware de logging
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// Stocker io dans app pour l'utiliser dans les contrôleurs
 app.set('io', io);
 
-// Routes
+let databaseReadyPromise;
+
+const syncSchema = async () => {
+  await sequelize.sync({ force: false });
+  const queryInterface = sequelize.getQueryInterface();
+  const boardColumns = await queryInterface.describeTable('Boards');
+
+  if (!boardColumns.cover_image_url) {
+    await queryInterface.addColumn('Boards', 'cover_image_url', {
+      type: sequelize.Sequelize.TEXT('medium'),
+      allowNull: true,
+    });
+    console.log('Colonne cover_image_url ajoutee aux boards');
+  }
+};
+
+const initializeDatabase = async () => {
+  if (!databaseReadyPromise) {
+    databaseReadyPromise = (async () => {
+      await sequelize.authenticate();
+      console.log('Connexion a la base de donnees MySQL reussie');
+      await syncSchema();
+      console.log('Modeles synchronises avec la base de donnees');
+    })().catch((error) => {
+      databaseReadyPromise = null;
+      throw error;
+    });
+  }
+
+  return databaseReadyPromise;
+};
+
+app.get(['/favicon.ico', '/favicon.png'], (req, res) => res.status(204).end());
+
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'API Gestion Projet operationnelle',
+    environment: isVercel ? 'vercel' : process.env.NODE_ENV || 'development',
+  });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ success: true, status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/db-test', async (req, res) => {
+  try {
+    await initializeDatabase();
+    const [rows] = await sequelize.query('SELECT 1 AS test');
+    res.json({ success: true, message: 'Database connected', data: rows });
+  } catch (error) {
+    console.error('DB test error:', error);
+    res.status(500).json({ success: false, message: 'Database connection failed', error: error.message });
+  }
+});
+
+app.use('/api', async (req, res, next) => {
+  try {
+    await initializeDatabase();
+    next();
+  } catch (error) {
+    console.error('Database initialization error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Base de donnees indisponible ou variables Vercel manquantes',
+      error: error.message,
+    });
+  }
+});
+
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/boards', require('./routes/board.routes'));
 app.use('/api/boards', require('./routes/list.routes'));
@@ -50,26 +139,20 @@ app.use('/api/cards', require('./routes/card.routes'));
 app.use('/api/subtasks', require('./routes/subtask.routes'));
 app.use('/api/comments', require('./routes/comment.routes'));
 
-// Test route
-app.get('/', (req, res) => {
-  res.json({ message: 'API Gestion Projet - Opérationnelle' });
-});
-
-// Middleware d'erreur global
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error(err.stack || err);
   res.status(err.status || 500).json({
     success: false,
     message: err.message || 'Erreur serveur interne',
   });
 });
 
-// Socket.IO authentication
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
     return next(new Error('Authentication error'));
   }
+
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     socket.userId = decoded.id;
@@ -79,52 +162,37 @@ io.use((socket, next) => {
   }
 });
 
-// Socket.IO connections
 io.on('connection', (socket) => {
-  console.log(`🟢 Utilisateur connecté: ${socket.userId}`);
+  console.log(`Utilisateur connecte: ${socket.userId}`);
 
   socket.on('join-board', (boardId) => {
     socket.join(`board-${boardId}`);
-    console.log(`📋 Utilisateur ${socket.userId} rejoint le board ${boardId}`);
+    console.log(`Utilisateur ${socket.userId} rejoint le board ${boardId}`);
   });
 
   socket.on('leave-board', (boardId) => {
     socket.leave(`board-${boardId}`);
-    console.log(`📋 Utilisateur ${socket.userId} quitte le board ${boardId}`);
+    console.log(`Utilisateur ${socket.userId} quitte le board ${boardId}`);
   });
 
   socket.on('disconnect', () => {
-    console.log(`🔴 Utilisateur déconnecté: ${socket.userId}`);
+    console.log(`Utilisateur deconnecte: ${socket.userId}`);
   });
 });
 
-// Database connection and server start
-const startServer = async () => {
-  try {
-    await sequelize.authenticate();
-    console.log('✅ Connexion à la base de données MySQL réussie');
-
-    await sequelize.sync({ force: false });
-    const queryInterface = sequelize.getQueryInterface();
-    const boardColumns = await queryInterface.describeTable('Boards');
-    if (!boardColumns.cover_image_url) {
-      await queryInterface.addColumn('Boards', 'cover_image_url', {
-        type: sequelize.Sequelize.TEXT('medium'),
-        allowNull: true,
+if (!isVercel) {
+  const PORT = process.env.PORT || 5000;
+  initializeDatabase()
+    .then(() => {
+      server.listen(PORT, () => {
+        console.log(`Serveur Express en ecoute sur le port ${PORT}`);
+        console.log('WebSocket Socket.IO active');
       });
-      console.log('Colonne cover_image_url ajoutee aux boards');
-    }
-    console.log('✅ Modèles synchronisés avec la base de données');
-
-    const PORT = process.env.PORT || 5000;
-    server.listen(PORT, () => {
-      console.log(`✅ Serveur Express en écoute sur le port ${PORT}`);
-      console.log(`✅ WebSocket Socket.IO activé`);
+    })
+    .catch((error) => {
+      console.error('Erreur lors du demarrage du serveur:', error);
+      process.exit(1);
     });
-  } catch (error) {
-    console.error('❌ Erreur lors du démarrage du serveur:', error);
-    process.exit(1);
-  }
-};
+}
 
-startServer();
+module.exports = app;
