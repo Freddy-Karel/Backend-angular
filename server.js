@@ -11,6 +11,7 @@ require('./models/index');
 const app = express();
 const server = http.createServer(app);
 const isVercel = Boolean(process.env.VERCEL);
+const isProduction = process.env.NODE_ENV === 'production';
 const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:4200')
   .split(',')
   .map((origin) => origin.trim())
@@ -63,7 +64,7 @@ app.set('io', io);
 let databaseReadyPromise;
 
 const syncSchema = async () => {
-  const shouldSync = !isVercel && process.env.DB_SYNC !== 'false';
+  const shouldSync = process.env.DB_SYNC === 'true' || (!isVercel && !isProduction && process.env.DB_SYNC !== 'false');
 
   if (shouldSync) {
     await sequelize.sync({ force: false });
