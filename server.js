@@ -65,9 +65,14 @@ let databaseReadyPromise;
 
 const syncSchema = async () => {
   const shouldSync = process.env.DB_SYNC === 'true' || (!isVercel && !isProduction && process.env.DB_SYNC !== 'false');
+  const shouldRunMigrations = shouldSync || process.env.DB_RUN_MIGRATIONS === 'true';
 
   if (shouldSync) {
     await sequelize.sync({ force: false });
+  }
+
+  if (!shouldRunMigrations) {
+    return;
   }
 
   const queryInterface = sequelize.getQueryInterface();
